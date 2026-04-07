@@ -34,6 +34,29 @@ python layer1_main_loop/agent.py
 python layer2_tool_system/agent.py
 ```
 
+## 原始 Spec Prompts
+
+这个项目用 spec coding 方式构建：先用自然语言写规格，再由 AI 实现。
+以下是每层的原始 spec prompt，记录"在理解之后能写出什么"。
+
+### Layer 1 — 主循环
+
+> 完成 main，首先初始化 chat client，此外 init message list，tool list，然后传入 run loop。
+>
+> run_loop: 首先在得到 message 后判断 list 是否为空来放入 system prompt（不过这个可以放在 main init），之后将 message（注意区分 role）存入 list，跟 access token 一起使用来调用 Claude API。Claude 将返回一个 streaming，边解析边展示，在 streaming 结束后按照 role：用户就是 user，AI 就是 assistant，content 的内容存入 messages。
+
+### Layer 2 — 工具系统
+
+> 接下来需要支持 streaming 结束后对 tool call 的 parse，支持两种情况：end 则进入 user input，tool_use 则不进 user input，摘出 tool call 的 {toolname, tool_args} 并进行 tools 的 append 存储。然后将 tool dicts 传入 run_tools。
+>
+> run_tools 首先 check tools 基类查看是否存在，这个 tools 基类要有以下参数：input_schema: dict，is_read_only: False（fail-closed，默认假设会写），is_destructive: False，is_concurrency_safe: False（默认串行）以及 tools 的 describe。
+>
+> run_tools 需要支持按照是否 concurrency_safe 分组：unsafe 就串行 pipeline 进行 tool call，safe 就是并行 pipeline。首先是 validation check，检查当前 args 下 tools 能不能使用，如果不行就 fallback；如果 ok 则进行 permission check，如果没有 permission 就连同 tool call 信息展示到用户界面来获取权限，如果 yes 则继续进入 tool 运行。
+>
+> 注意在两个组实际运行之前先有个 orderlist 存储传入顺序，这样返回后可以按顺序存储并返回。fallback 部分需要在 invalid、不允许、exec 失败等情况返回 error 字段而不是抛出异常，防止阻断 loop。
+>
+> tool_use 之后 messages 存两条：`{"role": "assistant", "content": final.content}` + `{"role": "user", "content": [tool_result blocks]}`。
+
 ## 设计原则
 
 **为什么 while True 不用递归？**
