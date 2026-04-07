@@ -13,7 +13,16 @@ Layer 1: 主循环状态机
 """
 
 import asyncio
+import os
+from pathlib import Path
 from anthropic import AsyncAnthropic
+
+# 从项目根目录的 .env 加载 API key
+_env = Path(__file__).parent.parent.parent / ".env"
+if _env.exists():
+    for line in _env.read_text().splitlines():
+        if line.startswith("ANTHROPIC_API_KEY="):
+            os.environ["ANTHROPIC_API_KEY"] = line.split("=", 1)[1].strip()
 
 SYSTEM_PROMPT = "You are a helpful coding assistant."
 MODEL = "claude-sonnet-4-6"

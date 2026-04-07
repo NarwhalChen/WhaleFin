@@ -14,6 +14,14 @@ import-forward: 复用 Layer 1 的常量，run_loop 在此重新实现并扩展
 import asyncio
 import sys
 import os
+from pathlib import Path
+
+# 从项目根目录的 .env 加载 API key
+_env = Path(__file__).parent.parent.parent / ".env"
+if _env.exists():
+    for line in _env.read_text().splitlines():
+        if line.startswith("ANTHROPIC_API_KEY="):
+            os.environ["ANTHROPIC_API_KEY"] = line.split("=", 1)[1].strip()
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
