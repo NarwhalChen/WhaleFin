@@ -36,26 +36,34 @@ messages.append({"role": "user", "content": [
 
 只存一条不会报错，但 Claude 下一轮会困惑，因为看不到自己说过"我要用工具"。
 
-**2. stop_reason 决定流程，不是"有没有 tool block"**
+**2. stop_reason 决定流程**
 
 ```python
 if final.stop_reason == "tool_use":
-    # 执行工具，不等用户输入，直接进下一轮
+    # 执行工具，直接进下一轮，不等用户输入
 elif final.stop_reason == "end_turn":
     # 等用户输入
 ```
 
 **3. orderlist 防止结果乱序**
 
-`asyncio.gather` 的结果顺序和输入一致，但 safe/unsafe 分组后合并会乱序。
+`asyncio.gather` 结果顺序和输入一致，但 safe/unsafe 分组后直接拼接会乱序。
 解法：预分配 `results = [None] * n`，按原始 index 写回，不拼接。
+
+**4. 工具定义直接传 API，不需要改 system prompt**
+
+```python
+client.messages.stream(
+    tools=[t.to_api_format() for t in tools],  # 直接传，API 原生支持
+)
+```
 
 ## 关键设计决策
 
 ### Fail-closed 默认值
 
 ```python
-is_read_only: bool = False       # 默认假设会写 → 触发 permission check
+is_read_only: bool = False         # 默认假设会写 → 触发 permission check
 is_concurrency_safe: bool = False  # 默认串行 → 不会并发写同一文件
 ```
 
@@ -82,7 +90,24 @@ is_concurrency_safe: bool = False  # 默认串行 → 不会并发写同一文�
 python layer2_tool_system/agent.py
 ```
 
-冒烟测试：
-1. `读一下 requirements.txt` → 直接读，不弹 permission 窗口（is_read_only=True）
-2. `在 /tmp/test.txt 里写入 hello world` → 弹窗，选 y，文件写入
-3. `读一下 /tmp/不存在的文件.txt` → 返回 ERROR，loop 不崩
+## 冒烟测试
+
+```
+You: 读一下 requirements.txt
+→ [Tools] 执行 1 个工具调用...（无 permission 弹窗，is_read_only=True）
+→ anthropic==0.40.0 ✅
+
+You: 在 /tmp/test.txt 里写入 hello world
+→ [Permission] 工具: file_write
+               参数: {'path': '/tmp/test.txt', 'content': 'hello world'}
+               允许执行? [y/N] y
+→ 写入成功 ✅
+
+You: 展示一下你刚才写的文件内容
+→ [Tools] 执行 1 个工具调用...（无 permission 弹窗）
+→ hello world ✅
+
+You: 读一下 /tmp/不存在的文件.txt
+→ FileNotFoundError: /tmp/不存在的文件.txt not found
+→ loop 不崩，继续对话 ✅
+```
