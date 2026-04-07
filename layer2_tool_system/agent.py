@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 # 从项目根目录的 .env 加载 API key
-_env = Path(__file__).parent.parent.parent / ".env"
+_env = Path(__file__).parent.parent / ".env"
 if _env.exists():
     for line in _env.read_text().splitlines():
         if line.startswith("ANTHROPIC_API_KEY="):
