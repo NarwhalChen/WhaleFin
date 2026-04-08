@@ -10,11 +10,13 @@
 
 ## 原始 Spec Prompt
 
-> 先修改 agent，agent 要支持 is_interactive 传参数，支持 chat client 的传入用于共用，支持 system prompt 的传入（默认 default sys）。此外无需太多改变。
->
-> 然后是 tools，新增几个 agent tools，这个 agent description 跟其他 tools 一样要同步到 system prompt 让 Claude 选择调用的时候有 context，要有一个 map 来做 name: system_prompt, tools 的 hash。
->
-> msg list 从主 agent 部分做 deepcopy 防止 agent 调用不知道 context。有了这些信息后 agent tool 会调用 run_loop under interactive=False，返回结果是 msg 的最后一条消息。
+**初稿（讨论中）：**
+
+> 那我们先修改 agent，agent 要支持 is_interactive 传参数，支持 chat client 的传入用于共用，支持 system prompt 的传入（默认 default sys）。此外无需太多改变。然后是 tools，新增一个 agent tools，其中要维护一个 name: sys_prompt，这个 agent 信息要同步到 system prompt 让 Claude 选择调用的时候有 context，在传参 parse 后从 map（不过这里可以用文件？这样好修改好用好同步）获得 new sys prompt，然后 msg list 从主 agent 部分做 deepcopy 防止 agent 调用不知道 context。有了这些信息后 agent tool 会调用 run_loop under interactive=False，返回结果我还没想好，是直接返回新增的信息？还是 compact 过。
+
+**最终 Spec：**
+
+> 那我们先修改 agent，agent 要支持 is_interactive 传参数，支持 chat client 的传入用于共用，支持 system prompt 的传入（默认 default sys）。此外无需太多改变。然后是 tools，新增几个 agent tools，这个 agent description 跟其他 tools 一样要同步到 system prompt 让 Claude 选择调用的时候有 context，要有一个 map 来做 name: system_prompt, tools 的 hash，然后 msg list 从主 agent 部分做 deepcopy 防止 agent 调用不知道 context。有了这些信息后 agent tool 会调用 run_loop under interactive=False，返回结果是 msg 的最后一条消息。
 
 ## Spec 之外补充的细节
 
