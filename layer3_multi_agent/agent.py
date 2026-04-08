@@ -73,14 +73,15 @@ async def run_loop(
             print()
 
         if final.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": final.content})
-
             tool_use_blocks = [b for b in final.content if b.type == "tool_use"]
             if interactive:
                 print(f"\n[Tools] 执行 {len(tool_use_blocks)} 个工具调用...")
 
+            # run_tools 先跑完（包括 AgentTool.call() 里的 deepcopy）
+            # 再 append assistant 消息，保证 deepcopy 时 messages 末尾是干净的
             ordered_results = await run_tools(tool_use_blocks, tools)
 
+            messages.append({"role": "assistant", "content": final.content})
             tool_results = [
                 {
                     "type": "tool_result",
