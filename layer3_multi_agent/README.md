@@ -125,3 +125,23 @@ You: 写一个文件 /tmp/hello.txt 内容是 hello，然后用 verify agent 确
 → [Agent] 启动 verify agent...
 → VerifyAgent 读文件，返回 PASS ✅
 ```
+
+## Bug 记录
+
+**deepcopy 时机问题**
+
+初版在 `run_tools` 之前 append assistant 消息，导致 `AgentTool.call()` deepcopy 时
+messages 末尾是未配对的 `tool_use` block，API 报错：
+`'tool_use' ids were found without 'tool_result' blocks immediately after`
+
+修法：把 assistant 消息的 append 挪到 `run_tools` 之后，deepcopy 时 messages 是完整的。
+
+```python
+# 修复前
+messages.append({"role": "assistant", "content": final.content})  # ← deepcopy 在这之后发生
+ordered_results = await run_tools(tool_use_blocks, tools)
+
+# 修复后
+ordered_results = await run_tools(tool_use_blocks, tools)          # ← deepcopy 在这里发生
+messages.append({"role": "assistant", "content": final.content})  # ← 工具跑完再 append
+```
