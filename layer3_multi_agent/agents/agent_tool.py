@@ -12,6 +12,7 @@ client 和 main_messages_ref 在 __init__ 注入：
   - main_messages_ref: 指向主 agent 的 messages list，deepcopy 用于给子 agent context
 """
 
+import asyncio
 import copy
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
@@ -36,6 +37,11 @@ class AgentTool(Tool):
                 "type": "string",
                 "description": "给子 agent 的任务描述",
             },
+            "background": {
+                "type": "boolean",
+                "description": "是否在后台运行。True = 立即返回，结果稍后打印；False = 等待结果再继续",
+                "default": False,
+            },
         },
         "required": ["agent_type", "task"],
     }
@@ -57,6 +63,7 @@ class AgentTool(Tool):
 
         agent_type = input["agent_type"]
         task = input["task"]
+        background = input.get("background", False)
 
         if agent_type not in AGENT_CONFIGS:
             return f"ERROR: unknown agent type '{agent_type}'，可用: {list(AGENT_CONFIGS.keys())}"
@@ -68,9 +75,9 @@ class AgentTool(Tool):
         sub_messages = copy.deepcopy(self.main_messages_ref)
         sub_messages.append({"role": "user", "content": task})
 
-        print(f"\n[Agent] 启动 {agent_type} agent，任务: {task[:60]}...")
+        print(f"\n[Agent] 启动 {agent_type} agent {'(background)' if background else ''}，任务: {task[:60]}...")
 
-        result = await run_loop(
+        coro = run_loop(
             messages=sub_messages,
             tools=config["tools"],
             client=self.client,
@@ -78,4 +85,12 @@ class AgentTool(Tool):
             interactive=False,  # 子 agent：end_turn 时返回结果，不等用户输入
         )
 
-        return result or "ERROR: agent 未返回任何结果"
+        if background:
+            async def _background_wrapper():
+                result = await coro
+                print(f"\n[Background] {agent_type} 完成: {result}")
+            asyncio.create_task(_background_wrapper())
+            return "[Background task started]"
+        else:
+            result = await coro
+            return result or "ERROR: agent 未返回任何结果"

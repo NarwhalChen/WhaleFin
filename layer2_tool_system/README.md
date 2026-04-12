@@ -41,6 +41,8 @@ messages.append({"role": "user", "content": [
 ```python
 if final.stop_reason == "tool_use":
     # 执行工具，直接进下一轮，不等用户输入
+elif final.stop_reason == "max_tokens":
+    # 输出被截断，注入续写信号，对用户透明
 elif final.stop_reason == "end_turn":
     # 等用户输入
 ```
@@ -57,6 +59,19 @@ client.messages.stream(
     tools=[t.to_api_format() for t in tools],  # 直接传，API 原生支持
 )
 ```
+
+**5. StreamingToolExecutor：边收边跑**
+
+传统做法等模型全部输出完再执行工具。Layer 2 改为监听原始事件流：
+
+```
+safe block 完整  → asyncio.create_task 立刻开跑
+unsafe block 完整 → 攒起来
+message_stop     → gather 等 safe 结束 → unsafe 串行跑
+```
+
+用原始事件流（`async for event in stream`）而不是 `text_stream`，
+才能在 `content_block_stop` 事件触发时立刻拿到完整的 tool_use block。
 
 ## 关键设计决策
 
@@ -84,6 +99,22 @@ is_concurrency_safe: bool = False  # 默认串行 → 不会并发写同一文�
 先 validate 再问权限：如果参数本来就是错的，不需要弹窗打扰用户。
 所有错误统一返回 `"ERROR: ..."` 字符串，不抛异常，主循环不会崩。
 
+### StreamingToolExecutor 的三种方案与 tradeoff
+
+实现边收边跑时有三种选择：
+
+**A — 所有 block 完整立刻开跑（忽略 safe/unsafe）**
+延迟最低，但违反 `is_concurrency_safe` 语义。两个 `file_write` 同时跑可能损坏文件。
+
+**B — 攒齐所有 block 再跑（原版行为）**
+安全但没有 streaming 收益，加了事件监听却没用上。
+
+**C — safe 立刻开跑，unsafe 攒起来等 safe 结束再串行（最终选择）**
+safe 工具拿到 streaming 收益，unsafe 工具保持安全语义，和 `is_concurrency_safe` 字段的设计意图一致。
+
+边缘情况：safe 和 unsafe 之间存在逻辑依赖时（先 write 再 read），方案 C 无法感知，可能读到旧内容。这是已知 tradeoff，实际场景中 Claude 通常不会在同一个 turn 里混用有依赖的 safe/unsafe 工具。
+
+
 ## 运行
 
 ```bash
@@ -94,7 +125,7 @@ python layer2_tool_system/agent.py
 
 ```
 You: 读一下 requirements.txt
-→ [Tools] 执行 1 个工具调用...（无 permission 弹窗，is_read_only=True）
+→ [Tools] 执行 1 个工具调用（streaming 模式）...（无 permission 弹窗，is_read_only=True）
 → anthropic==0.40.0 ✅
 
 You: 在 /tmp/test.txt 里写入 hello world
@@ -103,9 +134,9 @@ You: 在 /tmp/test.txt 里写入 hello world
                允许执行? [y/N] y
 → 写入成功 ✅
 
-You: 展示一下你刚才写的文件内容
-→ [Tools] 执行 1 个工具调用...（无 permission 弹窗）
-→ hello world ✅
+You: 同时读 requirements.txt 和搜索所有 py 文件
+→ [Tools] 执行 2 个工具调用（streaming 模式）...
+→ file_read 和 glob 同时开跑（safe），模型还在输出时已完成 ✅
 
 You: 读一下 /tmp/不存在的文件.txt
 → FileNotFoundError: /tmp/不存在的文件.txt not found

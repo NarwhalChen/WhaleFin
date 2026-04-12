@@ -26,9 +26,9 @@ if _env.exists():
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from anthropic import AsyncAnthropic
-from layer1_main_loop.agent import MODEL, MAX_TOKENS, SYSTEM_PROMPT
+from layer1_main_loop.agent import MODEL, MAX_TOKENS, _build_system_prompt, StopReason
 from layer2_tool_system.tools import ALL_TOOLS
-from layer2_tool_system.tool_execution import run_tools
+from layer2_tool_system.tool_execution import run_tools, StreamingToolExecutor
 
 
 async def run_loop(
@@ -43,37 +43,44 @@ async def run_loop(
     # 把工具转换为 API 格式
     api_tools = [t.to_api_format() for t in tools]
 
+    state = {
+        "continue_reason": None,
+        "full_response": "",
+        "last_usage": None,
+    }
+
     while True:
-        full_response = ""
+        state["full_response"] = ""
         print("\nAssistant: ", end="", flush=True)
+
+        executor = StreamingToolExecutor(tools)
 
         async with client.messages.stream(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
+            system=_build_system_prompt(),
             messages=messages,
             tools=api_tools if api_tools else [],
         ) as stream:
-            async for text in stream.text_stream:
-                print(text, end="", flush=True)
-                full_response += text
+            async for event in stream:
+                text = executor.on_event(event)
+                if text:
+                    print(text, end="", flush=True)
+                    state["full_response"] += text
 
             final = await stream.get_final_message()
+            state["last_usage"] = final.usage
 
         print()
 
-        # stop_reason 决定下一步
-        if final.stop_reason == "tool_use":
-            # 第一条: 原样存 assistant 的 content list (包含 tool_use blocks)
+        # ── continue 点: TOOL_USE ────────────────────────────────────────────
+        if final.stop_reason == StopReason.TOOL_USE:
+            tool_count = len(executor._tool_order)
+            print(f"\n[Tools] 执行 {tool_count} 个工具调用（streaming 模式）...")
+
+            ordered_results = await executor.finish()
+
             messages.append({"role": "assistant", "content": final.content})
-
-            # 找出所有 tool_use blocks 并执行
-            tool_use_blocks = [b for b in final.content if b.type == "tool_use"]
-            print(f"\n[Tools] 执行 {len(tool_use_blocks)} 个工具调用...")
-
-            ordered_results = await run_tools(tool_use_blocks, tools)
-
-            # 第二条: 按顺序存所有 tool_result
             tool_results = [
                 {
                     "type": "tool_result",
@@ -83,25 +90,32 @@ async def run_loop(
                 for tool_id, result in ordered_results
             ]
             messages.append({"role": "user", "content": tool_results})
-
-            # 不等用户输入，直接进下一轮让 Claude 处理结果
+            state["continue_reason"] = StopReason.TOOL_USE
             continue
 
-        else:
-            # end_turn: 正常回复，等用户输入
-            if full_response:
-                messages.append({"role": "assistant", "content": full_response})
+        # ── continue 点: MAX_TOKENS ──────────────────────────────────────────
+        if final.stop_reason == StopReason.MAX_TOKENS:
+            if state["full_response"]:
+                messages.append({"role": "assistant", "content": state["full_response"]})
+            messages.append({"role": "user", "content": "<continue_interrupted_response/>"})
+            state["continue_reason"] = StopReason.MAX_TOKENS
+            continue
 
-            try:
-                user_input = input("\nYou: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print("\n[退出]")
-                break
+        # ── continue 点: END_TURN ────────────────────────────────────────────
+        if state["full_response"]:
+            messages.append({"role": "assistant", "content": state["full_response"]})
 
-            if not user_input:
-                continue
+        try:
+            user_input = input("\nYou: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n[退出]")
+            break
 
-            messages.append({"role": "user", "content": user_input})
+        if not user_input:
+            continue
+
+        messages.append({"role": "user", "content": user_input})
+        state["continue_reason"] = StopReason.END_TURN
 
 
 async def main() -> None:

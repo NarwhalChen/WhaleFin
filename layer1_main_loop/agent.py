@@ -14,6 +14,7 @@ Layer 1: 主循环状态机
 
 import asyncio
 import os
+import platform
 from pathlib import Path
 from anthropic import AsyncAnthropic
 
@@ -24,9 +25,42 @@ if _env.exists():
         if line.startswith("ANTHROPIC_API_KEY="):
             os.environ["ANTHROPIC_API_KEY"] = line.split("=", 1)[1].strip()
 
-SYSTEM_PROMPT = "You are a helpful coding assistant."
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 8096
+
+# ── System prompt 静/动分区 ──────────────────────────────────────────────────
+# API 对 system prompt 做前缀缓存：前缀字节级一致才命中，命中后跳过 token 处理
+# 设计：把永远不变的内容放 BOUNDARY 之前（缓存命中），会变的放后面（不破坏前缀）
+DYNAMIC_BOUNDARY = "\n\n---DYNAMIC---\n"
+
+_STATIC_PROMPT = """\
+You are a helpful coding assistant.
+
+## Behavior Rules
+- Read code before modifying it.
+- Do not add unrequested features or abstractions.
+- Do not add comments to code you didn't change.
+- Report results honestly; don't claim success without verification.
+- If an approach fails, diagnose before retrying.\
+"""
+
+def _build_system_prompt() -> str:
+    dynamic = (
+        f"cwd: {Path.cwd()}\n"
+        f"os: {platform.system()} {platform.release()}\n"
+        f"shell: {os.environ.get('SHELL', 'unknown')}\n"
+        f"model: {MODEL}"
+    )
+    return _STATIC_PROMPT + DYNAMIC_BOUNDARY + dynamic
+
+# ── Continue 点常量 ──────────────────────────────────────────────────────────
+# 每个 continue 对应"为什么再跑一轮"的原因，随 layer 增加而扩展
+# Layer 2 加: TOOL_USE
+# Layer 4 加: REACTIVE_COMPACT
+class StopReason:
+    END_TURN   = "end_turn"    # 正常结束
+    MAX_TOKENS = "max_tokens"  # 输出被截断，自动续写
+    TOOL_USE   = "tool_use"    # 有工具调用（Layer 2+ 实现）
 
 
 async def run_loop(
@@ -35,34 +69,58 @@ async def run_loop(
     client: AsyncAnthropic = None,
 ) -> None:
     """
-    主循环。每轮:
-    1. 把当前 messages 发给 Claude，streaming 接收回复
-    2. 边收边打印文本片段 (content_block_delta)
-    3. 流结束后把完整回复存入 messages (role: assistant)
-    4. 等待用户输入，存入 messages (role: user)，进入下一轮
+    主循环状态机。
+
+    state dict 在迭代之间传递运行时状态，取代散落的局部变量。
+    价值: 可观测（任何时候 print(state) 知道循环在哪个阶段）、
+         可序列化（未来 session 恢复直接 json.dump(state)）。
+
+    continue 点:
+      MAX_TOKENS — 输出被截断，注入续写信号，对用户透明
+      END_TURN   — 等用户输入，进入下一轮
+      TOOL_USE   — Layer 2+ 实现
     """
+    # state dict: 循环的运行时状态
+    # 新增字段在这里声明，不要在 while 里随手创建局部变量
+    state = {
+        "continue_reason": None,  # 上一次 continue 的原因
+        "full_response": "",      # 当前轮的累积回复
+        "last_usage": None,       # 上一轮 API 的 token 用量（Layer 4 compact 触发用）
+    }
+
     while True:
-        # 1. 调用 Claude streaming API
-        full_response = ""
+        state["full_response"] = ""
         print("\nAssistant: ", end="", flush=True)
 
         async with client.messages.stream(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
+            system=_build_system_prompt(),
             messages=messages,
         ) as stream:
-            # 边收边打印，产生 streaming 效果
             async for text in stream.text_stream:
                 print(text, end="", flush=True)
-                full_response += text
+                state["full_response"] += text
 
-        print()  # 换行
+            final = await stream.get_final_message()
+            state["last_usage"] = final.usage
 
-        # 2. 把完整回复存入 messages
-        messages.append({"role": "assistant", "content": full_response})
+        print()
 
-        # 3. 等待用户输入
+        # ── continue 点: MAX_TOKENS ──────────────────────────────────────────
+        # 输出被 MAX_TOKENS 截断：保存已有内容，注入续写信号，继续循环
+        # 不等用户输入，对用户透明
+        if final.stop_reason == StopReason.MAX_TOKENS:
+            if state["full_response"]:
+                messages.append({"role": "assistant", "content": state["full_response"]})
+            messages.append({"role": "user", "content": "<continue_interrupted_response/>"})
+            state["continue_reason"] = StopReason.MAX_TOKENS
+            continue
+
+        # ── continue 点: END_TURN ────────────────────────────────────────────
+        if state["full_response"]:
+            messages.append({"role": "assistant", "content": state["full_response"]})
+
         try:
             user_input = input("\nYou: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -72,8 +130,8 @@ async def run_loop(
         if not user_input:
             continue
 
-        # 4. 存入 messages，进入下一轮
         messages.append({"role": "user", "content": user_input})
+        state["continue_reason"] = StopReason.END_TURN
 
 
 async def main() -> None:

@@ -114,6 +114,24 @@ LLM 输出不可信，必须在 prompt 层约束格式。
 python layer3_multi_agent/agent.py
 ```
 
+## Background 模式
+
+`background: true` 时，`AgentTool.call()` 不等结果，立即返回 `"[Background task started]"`，子 agent 在后台跑完后 print 结果。
+
+```python
+if background:
+    async def _background_wrapper():
+        result = await coro
+        print(f"\n[Background] {agent_type} 完成: {result}")
+    asyncio.create_task(_background_wrapper())
+    return "[Background task started]"
+```
+
+实现要点：
+- `asyncio.create_task` 把协程挂到当前 event loop，不阻塞主 agent
+- 结果通过 print 返回到终端，不写回主 agent 的 messages（避免污染上下文）
+- `background` 默认 `False`，向后兼容
+
 ## 冒烟测试
 
 ```
@@ -126,6 +144,11 @@ You: 写一个文件 /tmp/hello.txt 内容是 hello，然后用 verify agent 确
 → 写文件（permission 弹窗）
 → [Agent] 启动 verify agent...
 → VerifyAgent 读文件，返回 PASS ✅
+
+You: 用 background=true 启动 explore agent 扫描 Python 文件
+→ [Agent] 启动 explore agent (background)...
+→ 立即返回 [Background task started] ✅
+→ 主 agent 继续对话，稍后打印 [Background] explore 完成: ... ✅
 ```
 
 ## Bug 记录
