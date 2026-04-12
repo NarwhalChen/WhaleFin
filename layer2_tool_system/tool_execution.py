@@ -20,6 +20,7 @@
 import asyncio
 import json
 from .tools.base import Tool
+from .hooks import HookRegistry, DEFAULT_REGISTRY
 
 
 def _build_registry(tools: list[Tool]) -> dict[str, Tool]:
@@ -74,10 +75,16 @@ async def _run_single(block, tool: Tool | None) -> tuple[str, str]:
         return tool_id, f"ERROR: {type(e).__name__}: {e}"
 
 
-async def _run_single_dict(block_dict: dict, tool: Tool | None) -> tuple[str, str]:
+async def _run_single_dict(
+    block_dict: dict,
+    tool: Tool | None,
+    registry: HookRegistry = DEFAULT_REGISTRY,
+) -> tuple[str, str]:
     """
     和 _run_single 相同的 pipeline，但接收 dict 而不是 SDK block 对象。
     StreamingToolExecutor 在流式事件里自己构建 block dict，无法使用 SDK 对象。
+
+    pipeline: validate → PreToolUse → permission_check → execute → PostToolUse
     """
     tool_name = block_dict["name"]
     tool_args = block_dict["input"]
@@ -90,15 +97,24 @@ async def _run_single_dict(block_dict: dict, tool: Tool | None) -> tuple[str, st
     if error:
         return tool_id, error
 
-    allowed = await _permission_check(tool, tool_name, tool_args)
-    if not allowed:
-        return tool_id, "ERROR: tool call denied by user"
+    # PreToolUse hooks: BLOCK 短路，AUTO_APPROVE 跳过 permission
+    hook_result = await registry.run_pre(tool_name, tool_args)
+    if hook_result.action == "block":
+        return tool_id, f"ERROR: blocked by hook — {hook_result.reason}"
+
+    if hook_result.action != "auto_approve":
+        allowed = await _permission_check(tool, tool_name, tool_args)
+        if not allowed:
+            return tool_id, "ERROR: tool call denied by user"
 
     try:
         result = await tool.call(tool_args)
-        return tool_id, result
     except Exception as e:
         return tool_id, f"ERROR: {type(e).__name__}: {e}"
+
+    # PostToolUse hooks: 副作用（日志/截断），可改写 result
+    result = await registry.run_post(tool_name, tool_args, result)
+    return tool_id, result
 
 
 class StreamingToolExecutor:
@@ -117,8 +133,9 @@ class StreamingToolExecutor:
         ordered_results = await executor.finish()  # 等 safe，跑 unsafe，返回结果
     """
 
-    def __init__(self, tools: list[Tool]):
+    def __init__(self, tools: list[Tool], hook_registry: HookRegistry = DEFAULT_REGISTRY):
         self._registry = _build_registry(tools)
+        self._hook_registry = hook_registry
         self._blocks: dict[int, dict] = {}           # stream_index → 正在构建的 block
         self._tool_order: list[int] = []             # tool_use block 出现的 stream_index 顺序
         self._safe_tasks: list[tuple[int, asyncio.Task]] = []   # (stream_index, task)
@@ -172,7 +189,7 @@ class StreamingToolExecutor:
         return None
 
     async def _run_safe(self, index: int, block: dict, tool: Tool) -> None:
-        result = await _run_single_dict(block, tool)
+        result = await _run_single_dict(block, tool, self._hook_registry)
         self._results[index] = result
 
     async def finish(self) -> list[tuple[str, str]]:
@@ -184,7 +201,7 @@ class StreamingToolExecutor:
             await asyncio.gather(*[task for _, task in self._safe_tasks])
 
         for index, block, tool in self._unsafe_pending:
-            result = await _run_single_dict(block, tool)
+            result = await _run_single_dict(block, tool, self._hook_registry)
             self._results[index] = result
 
         return [self._results[idx] for idx in self._tool_order]

@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from anthropic import AsyncAnthropic
 from layer1_main_loop.agent import MODEL, MAX_TOKENS, _build_system_prompt, StopReason
 from layer2_tool_system.tools import ALL_TOOLS
-from layer2_tool_system.tool_execution import run_tools, StreamingToolExecutor
+from layer2_tool_system.tool_execution import StreamingToolExecutor
 
 
 async def run_loop(

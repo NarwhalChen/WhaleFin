@@ -38,12 +38,36 @@ class Tool(ABC):
 
     def validate(self, input: dict) -> str | None:
         """
-        检查 input 是否符合 input_schema 的 required 字段。
+        检查 input 是否符合 input_schema。
+        1. required 字段必须存在
+        2. 存在的字段类型必须匹配 JSON Schema type
         返回 None 表示通过，返回 "ERROR: ..." 表示失败。
         """
-        required = self.input_schema.get("properties", {})
+        properties = self.input_schema.get("properties", {})
         required_fields = self.input_schema.get("required", [])
+
+        # 1. required 字段存在性检查
         for field in required_fields:
             if field not in input:
                 return f"ERROR: invalid input — '{field}' is required"
+
+        # 2. 类型检查
+        _JSON_TYPE_MAP = {
+            "string":  str,
+            "number":  (int, float),
+            "integer": int,
+            "boolean": bool,
+            "array":   list,
+            "object":  dict,
+        }
+        for field, value in input.items():
+            schema = properties.get(field, {})
+            expected = schema.get("type")
+            if expected is None:
+                continue
+            py_type = _JSON_TYPE_MAP.get(expected)
+            if py_type and not isinstance(value, py_type):
+                actual = type(value).__name__
+                return f"ERROR: invalid input — '{field}' must be {expected}, got {actual}"
+
         return None
