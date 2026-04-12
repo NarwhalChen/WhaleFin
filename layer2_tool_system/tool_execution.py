@@ -37,37 +37,6 @@ async def _ask_user(tool_name: str, tool_args: dict) -> bool:
     return answer == "y"
 
 
-async def _run_single(block, tool: Tool | None) -> tuple[str, str]:
-    """
-    单个工具的完整 pipeline: validate → permission → execute
-    返回 (tool_use_id, result_string)
-    """
-    tool_name = block.name
-    tool_args = block.input
-    tool_id = block.id
-
-    # 1. 检查工具是否存在
-    if tool is None:
-        return tool_id, f"ERROR: unknown tool '{tool_name}'"
-
-    # 2. Validate: 检查必填字段
-    error = tool.validate(tool_args)
-    if error:
-        return tool_id, error
-
-    # 3. Permission check（_run_single 无 registry，直接弹窗）
-    allowed = await _ask_user(tool_name, tool_args)
-    if not allowed:
-        return tool_id, "ERROR: tool call denied by user"
-
-    # 4. Execute
-    try:
-        result = await tool.call(tool_args)
-        return tool_id, result
-    except Exception as e:
-        return tool_id, f"ERROR: {type(e).__name__}: {e}"
-
-
 async def _run_single_dict(
     block_dict: dict,
     tool: Tool | None,
