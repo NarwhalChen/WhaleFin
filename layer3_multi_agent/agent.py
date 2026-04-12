@@ -31,6 +31,7 @@ from layer2_tool_system.tools import ALL_TOOLS
 from layer2_tool_system.tool_execution import StreamingToolExecutor
 from layer2_tool_system.hooks import HookRegistry, DEFAULT_REGISTRY
 from layer3_multi_agent.agents.agent_tool import AgentTool
+from layer3_multi_agent.background import BackgroundManager
 
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 8096
@@ -44,6 +45,7 @@ async def run_loop(
     interactive: bool = True,                # False = 子 agent 模式，end_turn 直接返回
     hook_registry: HookRegistry = DEFAULT_REGISTRY,
     max_turns: int = 0,                      # 0 = 无限制；子 agent 默认传 30
+    bg_manager: BackgroundManager = None,    # 后台任务管理器，drain 通知用
 ) -> str | None:
     """
     Layer 3 主循环。
@@ -64,6 +66,11 @@ async def run_loop(
         if max_turns and state["turns"] >= max_turns:
             return state["full_response"] or "ERROR: max_turns reached"
         state["turns"] += 1
+
+        # 后台任务完成通知注入 messages，Claude 下一轮可见
+        if bg_manager:
+            bg_manager.drain_into(messages)
+
         state["full_response"] = ""
 
         if interactive:
@@ -150,7 +157,8 @@ async def main() -> None:
 
     # AgentTool 注入 client 和 messages 引用
     # main_messages_ref 指向同一个 list，call() 时 deepcopy 当前状态
-    agent_tool = AgentTool(client=client, main_messages_ref=messages)
+    bg_manager = BackgroundManager()
+    agent_tool = AgentTool(client=client, main_messages_ref=messages, bg_manager=bg_manager)
     tools = ALL_TOOLS + [agent_tool]
 
     print(f"[Layer 3] 工具已加载: {[t.name for t in tools]}")
@@ -165,7 +173,7 @@ async def main() -> None:
         return
 
     messages.append({"role": "user", "content": first_input})
-    await run_loop(messages, tools, client)
+    await run_loop(messages, tools, client, bg_manager=bg_manager)
 
 
 if __name__ == "__main__":

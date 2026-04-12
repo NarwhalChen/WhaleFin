@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from layer2_tool_system.tools.base import Tool
 from layer3_multi_agent.agents.configs import AGENT_CONFIGS
+from layer3_multi_agent.background import BackgroundManager
 
 
 class AgentTool(Tool):
@@ -46,9 +47,10 @@ class AgentTool(Tool):
         "required": ["agent_type", "task"],
     }
 
-    def __init__(self, client, main_messages_ref: list):
+    def __init__(self, client, main_messages_ref: list, bg_manager: BackgroundManager = None):
         self.client = client
         self.main_messages_ref = main_messages_ref  # 指向主 agent 的 messages，不拷贝
+        self.bg_manager = bg_manager or BackgroundManager()
 
         # 动态生成 description，列出所有可用 agent
         agent_list = "\n".join(
@@ -95,11 +97,8 @@ class AgentTool(Tool):
         )
 
         if background:
-            async def _background_wrapper():
-                result = await coro
-                print(f"\n[Background] {agent_type} 完成: {result}")
-            asyncio.create_task(_background_wrapper())
-            return "[Background task started]"
+            task_id = self.bg_manager.start(agent_type, task, coro)
+            return f"[Background task started] task_id={task_id}，完成后结果将自动注入对话"
         else:
             result = await coro
             return result or "ERROR: agent 未返回任何结果"
