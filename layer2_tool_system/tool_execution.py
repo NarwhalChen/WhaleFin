@@ -26,14 +26,8 @@ def _build_registry(tools: list[Tool]) -> dict[str, Tool]:
     return {t.name: t for t in tools}
 
 
-async def _permission_check(tool: Tool, tool_name: str, tool_args: dict) -> bool:
-    """
-    只读工具跳过。非只读工具弹窗询问用户。
-    返回 True = 允许，False = 拒绝。
-    """
-    if tool.is_read_only:
-        return True
-
+async def _ask_user(tool_name: str, tool_args: dict) -> bool:
+    """弹窗询问用户，返回 True = 允许，False = 拒绝。"""
     print(f"\n[Permission] 工具: {tool_name}")
     print(f"             参数: {tool_args}")
     try:
@@ -61,8 +55,8 @@ async def _run_single(block, tool: Tool | None) -> tuple[str, str]:
     if error:
         return tool_id, error
 
-    # 3. Permission check
-    allowed = await _permission_check(tool, tool_name, tool_args)
+    # 3. Permission check（_run_single 无 registry，直接弹窗）
+    allowed = await _ask_user(tool_name, tool_args)
     if not allowed:
         return tool_id, "ERROR: tool call denied by user"
 
@@ -101,10 +95,12 @@ async def _run_single_dict(
     if hook_result.action == "block":
         return tool_id, f"ERROR: blocked by hook — {hook_result.reason}"
 
-    if hook_result.action != "auto_approve":
-        allowed = await _permission_check(tool, tool_name, tool_args)
+    if hook_result.action == "allow":
+        # ALLOW: 继续走弹窗询问用户
+        allowed = await _ask_user(tool_name, tool_args)
         if not allowed:
             return tool_id, "ERROR: tool call denied by user"
+    # AUTO_APPROVE: 跳过弹窗，直接 execute
 
     try:
         result = await tool.call(tool_args)
