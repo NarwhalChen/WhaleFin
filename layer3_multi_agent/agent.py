@@ -8,7 +8,7 @@ Layer 3: 多 Agent 体系
 - AgentTool：把子 agent 包装成普通工具，走同一套 tool_execution pipeline
 - AGENT_CONFIGS：name → {system_prompt, tools}，定义可用的子 agent
 
-import-forward: 复用 Layer 2 的工具和 pipeline，run_loop 在此扩展
+import-forward: 复用 Layer 1/2 的 pipeline，run_loop 在此扩展
 """
 
 import asyncio
@@ -26,11 +26,12 @@ if _env.exists():
             os.environ["ANTHROPIC_API_KEY"] = line.split("=", 1)[1].strip()
 
 from anthropic import AsyncAnthropic
+from layer1_main_loop.agent import _build_system_prompt, StopReason
 from layer2_tool_system.tools import ALL_TOOLS
-from layer2_tool_system.tool_execution import run_tools
+from layer2_tool_system.tool_execution import StreamingToolExecutor
+from layer2_tool_system.hooks import HookRegistry, DEFAULT_REGISTRY
 from layer3_multi_agent.agents.agent_tool import AgentTool
 
-DEFAULT_SYSTEM_PROMPT = "You are a helpful coding assistant."
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 8096
 
@@ -39,8 +40,9 @@ async def run_loop(
     messages: list,
     tools: list = [],
     client: AsyncAnthropic = None,
-    system: str = DEFAULT_SYSTEM_PROMPT,   # Layer 3 新增：可传入不同角色 prompt
-    interactive: bool = True,               # Layer 3 新增：False = 子 agent 模式
+    system: str = None,                      # None → 使用 Layer 1 的 _build_system_prompt()
+    interactive: bool = True,                # False = 子 agent 模式，end_turn 直接返回
+    hook_registry: HookRegistry = DEFAULT_REGISTRY,
 ) -> str | None:
     """
     Layer 3 主循环。
@@ -50,36 +52,49 @@ async def run_loop(
     """
     api_tools = [t.to_api_format() for t in tools]
 
+    state = {
+        "continue_reason": None,
+        "full_response": "",
+        "last_usage": None,
+    }
+
     while True:
-        full_response = ""
+        state["full_response"] = ""
+
         if interactive:
             print("\nAssistant: ", end="", flush=True)
+
+        executor = StreamingToolExecutor(tools, hook_registry=hook_registry)
 
         async with client.messages.stream(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=system,
+            system=system or _build_system_prompt(),
             messages=messages,
             tools=api_tools if api_tools else [],
         ) as stream:
-            async for text in stream.text_stream:
-                if interactive:
-                    print(text, end="", flush=True)
-                full_response += text
+            async for event in stream:
+                text = executor.on_event(event)
+                if text:
+                    if interactive:
+                        print(text, end="", flush=True)
+                    state["full_response"] += text
 
             final = await stream.get_final_message()
+            state["last_usage"] = final.usage
 
         if interactive:
             print()
 
-        if final.stop_reason == "tool_use":
-            tool_use_blocks = [b for b in final.content if b.type == "tool_use"]
+        # ── continue 点: TOOL_USE ────────────────────────────────────────────
+        if final.stop_reason == StopReason.TOOL_USE:
+            tool_count = len(executor._tool_order)
             if interactive:
-                print(f"\n[Tools] 执行 {len(tool_use_blocks)} 个工具调用...")
+                print(f"\n[Tools] 执行 {tool_count} 个工具调用（streaming 模式）...")
 
-            # run_tools 先跑完（包括 AgentTool.call() 里的 deepcopy）
-            # 再 append assistant 消息，保证 deepcopy 时 messages 末尾是干净的
-            ordered_results = await run_tools(tool_use_blocks, tools)
+            # finish() 先于 append assistant 消息，保证 AgentTool deepcopy 时
+            # messages 末尾是干净的（无未结算的 tool_use block）
+            ordered_results = await executor.finish()
 
             messages.append({"role": "assistant", "content": final.content})
             tool_results = [
@@ -91,29 +106,37 @@ async def run_loop(
                 for tool_id, result in ordered_results
             ]
             messages.append({"role": "user", "content": tool_results})
+            state["continue_reason"] = StopReason.TOOL_USE
             continue
 
-        else:  # end_turn
-            if full_response:
-                messages.append({"role": "assistant", "content": full_response})
+        # ── continue 点: MAX_TOKENS ──────────────────────────────────────────
+        if final.stop_reason == StopReason.MAX_TOKENS:
+            if state["full_response"]:
+                messages.append({"role": "assistant", "content": state["full_response"]})
+            messages.append({"role": "user", "content": "<continue_interrupted_response/>"})
+            state["continue_reason"] = StopReason.MAX_TOKENS
+            continue
 
-            if not interactive:
-                # 子 agent 模式：返回结果给 AgentTool.call()
-                return full_response
+        # ── continue 点: END_TURN ────────────────────────────────────────────
+        if state["full_response"]:
+            messages.append({"role": "assistant", "content": state["full_response"]})
 
-            # 主 agent 模式：等用户输入
-            if interactive:
-                print("\nAssistant: ", end="") if not full_response else None
-            try:
-                user_input = input("\nYou: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print("\n[退出]")
-                break
+        if not interactive:
+            # 子 agent 模式：返回结果给 AgentTool.call()
+            return state["full_response"]
 
-            if not user_input:
-                continue
+        # 主 agent 模式：等用户输入
+        try:
+            user_input = input("\nYou: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n[退出]")
+            break
 
-            messages.append({"role": "user", "content": user_input})
+        if not user_input:
+            continue
+
+        messages.append({"role": "user", "content": user_input})
+        state["continue_reason"] = StopReason.END_TURN
 
 
 async def main() -> None:
