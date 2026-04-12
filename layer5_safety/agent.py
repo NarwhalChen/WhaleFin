@@ -37,6 +37,7 @@ from layer3_multi_agent.tools.task_tools import make_task_tools
 from layer4_context_economy.tools.compact_tool import CompactTool
 from layer4_context_economy.compaction import snip_result, MicroCompactor
 from layer5_safety.bash_classifier import BashClassifier
+from layer5_safety.settings import load_hooks_into
 
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 8096
@@ -195,13 +196,17 @@ async def main() -> None:
     agent_tool = AgentTool(client=client, main_messages_ref=messages, bg_manager=bg_manager)
     tools = ALL_TOOLS + [agent_tool, compact_tool] + make_task_tools(bg_manager)
 
+    # 内置 hook（永远跑，用户配置覆盖不了）
     registry = HookRegistry()
     registry.register_pre(BashClassifier(), matcher="bash")
     registry.register_post(ToolLogger(), matcher="*")
 
+    # 用户配置 hook（从 settings.json 加载，追加在内置 hook 之后）
+    load_hooks_into(registry)
+
     print(f"[Layer 5] 工具已加载: {[t.name for t in tools]}")
     print(f"[Layer 5] 自动压缩阈值: {COMPACT_THRESHOLD:.0%}")
-    print(f"[Layer 5] 安全 hooks: BashClassifier + ToolLogger")
+    print(f"[Layer 5] 安全 hooks: BashClassifier + ToolLogger + 用户配置")
 
     try:
         first_input = input("You: ").strip()
