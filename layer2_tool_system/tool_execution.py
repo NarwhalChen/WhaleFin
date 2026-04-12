@@ -4,10 +4,9 @@
 每个工具调用走: validate → permission_check → execute
 错误在每一步都返回 "ERROR: ..." 字符串，不抛异常，主循环不崩。
 
-两种执行模式:
-1. run_tools()            — 批量模式，收齐所有 block 再执行（Layer 2 原版）
-2. StreamingToolExecutor  — 流式模式，safe block 完整立刻执行，unsafe 攒起来等 safe 结束再串行
-                            对应 CC 的 StreamingToolExecutor.ts
+执行模式:
+StreamingToolExecutor  — 流式模式，safe block 完整立刻执行，unsafe 攒起来等 safe 结束再串行
+                         对应 CC 的 StreamingToolExecutor.ts
 
 并发设计:
 - 按 is_concurrency_safe 分组
@@ -207,40 +206,3 @@ class StreamingToolExecutor:
         return [self._results[idx] for idx in self._tool_order]
 
 
-async def run_tools(tool_use_blocks: list, tools: list[Tool]) -> list[tuple[str, str]]:
-    """
-    接收 Claude 返回的所有 tool_use blocks，执行并返回有序结果。
-
-    返回: [(tool_use_id, result_string), ...]
-    顺序和 tool_use_blocks 输入顺序一致。
-    """
-    registry = _build_registry(tools)
-    n = len(tool_use_blocks)
-
-    # orderlist: 预分配结果槽，保证输出顺序和输入一致
-    results: list[tuple[str, str] | None] = [None] * n
-
-    # 按 concurrency_safe 分组，同时记录原始 index
-    safe_indexed = []
-    unsafe_indexed = []
-
-    for i, block in enumerate(tool_use_blocks):
-        tool = registry.get(block.name)
-        if tool and tool.is_concurrency_safe:
-            safe_indexed.append((i, block, tool))
-        else:
-            unsafe_indexed.append((i, block, tool))
-
-    # Safe 组: 并发执行
-    if safe_indexed:
-        safe_coros = [_run_single(block, tool) for _, block, tool in safe_indexed]
-        safe_results = await asyncio.gather(*safe_coros)
-        for (i, _, _), (tool_id, result) in zip(safe_indexed, safe_results):
-            results[i] = (tool_id, result)
-
-    # Unsafe 组: 串行执行
-    for i, block, tool in unsafe_indexed:
-        tool_id, result = await _run_single(block, tool)
-        results[i] = (tool_id, result)
-
-    return results  # type: ignore
