@@ -86,22 +86,42 @@ async def run_loop(
 
         executor = StreamingToolExecutor(tools, hook_registry=hook_registry)
 
-        async with client.messages.stream(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=system or (_build_system_prompt() + AGENT_BOUNDARY + COMPACT_RULES),
-            messages=messages,
-            tools=api_tools if api_tools else [],
-        ) as stream:
-            async for event in stream:
-                text = executor.on_event(event)
-                if text:
-                    if interactive:
-                        print(text, end="", flush=True)
-                    state["full_response"] += text
+        # Reactive Compact: 每个 turn 只尝试一次，防止 413 无限循环
+        reactive_attempted = False
 
-            final = await stream.get_final_message()
-            state["last_usage"] = final.usage
+        async def _do_stream():
+            async with client.messages.stream(
+                model=MODEL,
+                max_tokens=MAX_TOKENS,
+                system=system or (_build_system_prompt() + AGENT_BOUNDARY + COMPACT_RULES),
+                messages=messages,
+                tools=api_tools if api_tools else [],
+            ) as stream:
+                async for event in stream:
+                    text = executor.on_event(event)
+                    if text:
+                        if interactive:
+                            print(text, end="", flush=True)
+                        state["full_response"] += text
+                return await stream.get_final_message()
+
+        try:
+            final = await _do_stream()
+        except Exception as e:
+            if "prompt is too long" in str(e).lower() or "413" in str(e):
+                if not reactive_attempted and compact_tool:
+                    reactive_attempted = True
+                    print("\n[Reactive Compact] prompt too long，紧急压缩后重试...")
+                    await compact_tool.call({})
+                    state["full_response"] = ""
+                    executor = StreamingToolExecutor(tools, hook_registry=hook_registry)
+                    final = await _do_stream()
+                else:
+                    raise
+            else:
+                raise
+
+        state["last_usage"] = final.usage
 
         if interactive:
             print()
