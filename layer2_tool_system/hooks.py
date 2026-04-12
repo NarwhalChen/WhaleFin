@@ -50,28 +50,38 @@ class PostToolUseHook:
 
 # ── HookRegistry ─────────────────────────────────────────────────────────────
 
+def _matches(matcher: str, tool_name: str) -> bool:
+    """matcher 支持精确匹配和 * 通配符。"""
+    return matcher == "*" or matcher == tool_name
+
+
 @dataclass
 class HookRegistry:
-    pre_hooks: list[PreToolUseHook] = field(default_factory=list)
-    post_hooks: list[PostToolUseHook] = field(default_factory=list)
+    # (matcher, hook) 元组，matcher 决定哪些 tool 触发这个 hook
+    pre_hooks: list[tuple[str, PreToolUseHook]] = field(default_factory=list)
+    post_hooks: list[tuple[str, PostToolUseHook]] = field(default_factory=list)
 
-    def register_pre(self, hook: PreToolUseHook) -> None:
-        self.pre_hooks.append(hook)
+    def register_pre(self, hook: PreToolUseHook, matcher: str = "*") -> None:
+        self.pre_hooks.append((matcher, hook))
 
-    def register_post(self, hook: PostToolUseHook) -> None:
-        self.post_hooks.append(hook)
+    def register_post(self, hook: PostToolUseHook, matcher: str = "*") -> None:
+        self.post_hooks.append((matcher, hook))
 
     async def run_pre(self, tool_name: str, tool_args: dict) -> HookResult:
-        """顺序跑所有 pre hook，任何一个 BLOCK 就短路。"""
-        for hook in self.pre_hooks:
+        """顺序跑匹配的 pre hook，任何一个 BLOCK 就短路。"""
+        for matcher, hook in self.pre_hooks:
+            if not _matches(matcher, tool_name):
+                continue
             result = await hook.pre_tool_use(tool_name, tool_args)
             if result.action != "allow":
                 return result
         return HookResult.allow()
 
     async def run_post(self, tool_name: str, tool_args: dict, result: str) -> str:
-        """顺序跑所有 post hook，每个都可以改写 result。"""
-        for hook in self.post_hooks:
+        """顺序跑匹配的 post hook，每个都可以改写 result。"""
+        for matcher, hook in self.post_hooks:
+            if not _matches(matcher, tool_name):
+                continue
             result = await hook.post_tool_use(tool_name, tool_args, result)
         return result
 

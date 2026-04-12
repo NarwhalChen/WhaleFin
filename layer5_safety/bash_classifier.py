@@ -54,9 +54,6 @@ class BashClassifier(PreToolUseHook):
     """
 
     async def pre_tool_use(self, tool_name: str, tool_args: dict) -> HookResult:
-        if tool_name != "bash":
-            return HookResult.allow()
-
         command = tool_args.get("command", "")
 
         for pattern, reason in _COMPILED:
