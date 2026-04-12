@@ -35,6 +35,7 @@ from layer3_multi_agent.agents.agent_tool import AgentTool
 from layer3_multi_agent.background import BackgroundManager
 from layer3_multi_agent.tools.task_tools import make_task_tools
 from layer4_context_economy.tools.compact_tool import CompactTool
+from layer4_context_economy.compaction import snip_result, MicroCompactor
 
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 8096
@@ -68,6 +69,7 @@ async def run_loop(
         "last_usage": None,
         "turns": 0,
     }
+    micro = MicroCompactor()
 
     while True:
         if max_turns and state["turns"] >= max_turns:
@@ -119,15 +121,19 @@ async def run_loop(
             ordered_results = await executor.finish()
 
             messages.append({"role": "assistant", "content": final.content})
-            tool_results = [
-                {
+            tool_results = []
+            for tool_id, result in ordered_results:
+                # Snip: 超长结果存磁盘，只保留 preview
+                result = snip_result(tool_id, result)
+                tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_id,
                     "content": result,
-                }
-                for tool_id, result in ordered_results
-            ]
+                })
             messages.append({"role": "user", "content": tool_results})
+            # Micro: 窗口滑动，被挤出的旧结果替换成占位符
+            for tool_id, _ in ordered_results:
+                micro.add(tool_id, messages)
             state["continue_reason"] = StopReason.TOOL_USE
             continue
 
