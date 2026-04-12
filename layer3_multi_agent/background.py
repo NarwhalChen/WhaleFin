@@ -29,7 +29,8 @@ class TaskRecord:
 class BackgroundManager:
     def __init__(self):
         self._tasks: dict[str, TaskRecord] = {}
-        self._notify_queue: list[str] = []   # 待注入 messages 的通知
+        self._asyncio_tasks: dict[str, object] = {}  # task_id → asyncio.Task，用于 cancel
+        self._notify_queue: list[str] = []
         self._counter = 0
 
     def start(self, agent_type: str, task_desc: str, coro) -> str:
@@ -44,7 +45,8 @@ class BackgroundManager:
         )
         self._tasks[task_id] = record
 
-        asyncio.create_task(self._run(record, coro))
+        t = asyncio.create_task(self._run(record, coro))
+        self._asyncio_tasks[task_id] = t
         return task_id
 
     async def _run(self, record: TaskRecord, coro) -> None:

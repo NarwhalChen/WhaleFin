@@ -32,6 +32,7 @@ from layer2_tool_system.tool_execution import StreamingToolExecutor
 from layer2_tool_system.hooks import HookRegistry, DEFAULT_REGISTRY
 from layer3_multi_agent.agents.agent_tool import AgentTool
 from layer3_multi_agent.background import BackgroundManager
+from layer3_multi_agent.tools.task_tools import make_task_tools
 
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 8096
@@ -159,7 +160,7 @@ async def main() -> None:
     # main_messages_ref 指向同一个 list，call() 时 deepcopy 当前状态
     bg_manager = BackgroundManager()
     agent_tool = AgentTool(client=client, main_messages_ref=messages, bg_manager=bg_manager)
-    tools = ALL_TOOLS + [agent_tool]
+    tools = ALL_TOOLS + [agent_tool] + make_task_tools(bg_manager)
 
     print(f"[Layer 3] 工具已加载: {[t.name for t in tools]}")
     print(f"[Layer 3] 可用 agent: {list(__import__('layer3_multi_agent.agents.configs', fromlist=['AGENT_CONFIGS']).AGENT_CONFIGS.keys())}")
