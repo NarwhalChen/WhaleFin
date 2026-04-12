@@ -36,6 +36,8 @@ from layer3_multi_agent.background import BackgroundManager
 from layer3_multi_agent.tools.task_tools import make_task_tools
 from layer4_context_economy.tools.compact_tool import CompactTool
 from layer4_context_economy.compaction import snip_result, MicroCompactor
+from layer2_tool_system.hooks import HookRegistry
+from layer5_safety.bash_classifier import BashClassifier
 
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 8096
@@ -194,6 +196,9 @@ async def main() -> None:
     agent_tool = AgentTool(client=client, main_messages_ref=messages, bg_manager=bg_manager)
     tools = ALL_TOOLS + [agent_tool, compact_tool] + make_task_tools(bg_manager)
 
+    registry = HookRegistry()
+    registry.register_pre(BashClassifier(), matcher="bash")
+
     print(f"[Layer 4] 工具已加载: {[t.name for t in tools]}")
     print(f"[Layer 4] 自动压缩阈值: {COMPACT_THRESHOLD:.0%}")
 
@@ -206,7 +211,7 @@ async def main() -> None:
         return
 
     messages.append({"role": "user", "content": first_input})
-    await run_loop(messages, tools, client, bg_manager=bg_manager)
+    await run_loop(messages, tools, client, bg_manager=bg_manager, hook_registry=registry)
 
 
 if __name__ == "__main__":
