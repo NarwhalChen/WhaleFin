@@ -32,6 +32,7 @@ MAX_TOKENS = 8096
 # API 对 system prompt 做前缀缓存：前缀字节级一致才命中，命中后跳过 token 处理
 # 设计：把永远不变的内容放 BOUNDARY 之前（缓存命中），会变的放后面（不破坏前缀）
 DYNAMIC_BOUNDARY = "\n\n---DYNAMIC---\n"
+AGENT_BOUNDARY = "\n\n---AGENT---\n"
 
 _STATIC_PROMPT = """\
 You are a helpful coding assistant.

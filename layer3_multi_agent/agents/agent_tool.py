@@ -77,12 +77,21 @@ class AgentTool(Tool):
 
         print(f"\n[Agent] 启动 {agent_type} agent {'(background)' if background else ''}，任务: {task[:60]}...")
 
+        # 子 agent 不拥有 AgentTool 自身，防止递归 spawn
+        sub_tools = [t for t in config["tools"] if not isinstance(t, AgentTool)]
+
+        # Fork cache 优化：继承主 agent 的 system prompt 前缀，保持字节级一致
+        # API 对前缀相同的请求命中 prompt cache，子 agent 角色说明追加在后面
+        from layer1_main_loop.agent import _build_system_prompt, AGENT_BOUNDARY
+        sub_system = _build_system_prompt() + AGENT_BOUNDARY + config["system"]
+
         coro = run_loop(
             messages=sub_messages,
-            tools=config["tools"],
+            tools=sub_tools,
             client=self.client,
-            system=config["system"],
+            system=sub_system,
             interactive=False,  # 子 agent：end_turn 时返回结果，不等用户输入
+            max_turns=30,
         )
 
         if background:

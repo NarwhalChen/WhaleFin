@@ -26,7 +26,7 @@ if _env.exists():
             os.environ["ANTHROPIC_API_KEY"] = line.split("=", 1)[1].strip()
 
 from anthropic import AsyncAnthropic
-from layer1_main_loop.agent import _build_system_prompt, StopReason
+from layer1_main_loop.agent import _build_system_prompt, StopReason, AGENT_BOUNDARY
 from layer2_tool_system.tools import ALL_TOOLS
 from layer2_tool_system.tool_execution import StreamingToolExecutor
 from layer2_tool_system.hooks import HookRegistry, DEFAULT_REGISTRY
@@ -43,6 +43,7 @@ async def run_loop(
     system: str = None,                      # None → 使用 Layer 1 的 _build_system_prompt()
     interactive: bool = True,                # False = 子 agent 模式，end_turn 直接返回
     hook_registry: HookRegistry = DEFAULT_REGISTRY,
+    max_turns: int = 0,                      # 0 = 无限制；子 agent 默认传 30
 ) -> str | None:
     """
     Layer 3 主循环。
@@ -56,9 +57,13 @@ async def run_loop(
         "continue_reason": None,
         "full_response": "",
         "last_usage": None,
+        "turns": 0,
     }
 
     while True:
+        if max_turns and state["turns"] >= max_turns:
+            return state["full_response"] or "ERROR: max_turns reached"
+        state["turns"] += 1
         state["full_response"] = ""
 
         if interactive:
