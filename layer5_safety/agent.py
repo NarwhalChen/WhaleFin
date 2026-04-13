@@ -40,7 +40,7 @@ from layer4_context_economy.compaction import snip_result, MicroCompactor
 from layer5_safety.bash_classifier import BashClassifier
 from layer5_safety.settings import load_hooks_into
 from layer5_safety.permission_hooks import register_permission_mode
-from layer5_safety.session import new_session_id, append_message, load_session, resolve_session_id
+from layer5_safety.session import new_session_id, append_message, load_session, resolve_session_id, mark_active
 
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 8096
@@ -209,13 +209,16 @@ async def main(permission_mode: str = "default", resume: str = None) -> None:
                 messages = []
             else:
                 print(f"[Session] Resume: {session_id}（{len(messages)} 条历史）")
+            mark_active(session_id)
         except FileNotFoundError as e:
             print(f"[Session] {e}，开新 session")
             session_id = new_session_id()
             messages = []
+            mark_active(session_id)
     else:
         session_id = new_session_id()
         messages = []
+        mark_active(session_id)
         print(f"[Session] 新会话: {session_id}")
 
     bg_manager = BackgroundManager()
