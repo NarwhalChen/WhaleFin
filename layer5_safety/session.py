@@ -3,10 +3,10 @@ Session Persistence
 
 JSONL append-only，每条消息单独一行写入，crash-safe。
 
-存储路径: ~/.whalefin/sessions/{session_id}.jsonl
-session_id: YYYYMMDD-HHMMSS，启动时生成
+存储路径: ~/.whalefin/projects/{encoded-cwd}/{uuid}.jsonl
+session_id: UUID v4，启动时生成
 
-last 指针: ~/.whalefin/sessions/last — 存一行 session_id，
+last 指针: ~/.whalefin/projects/{encoded-cwd}/last — 存一行 session_id，
 每次新建或 resume session 时覆盖写，不依赖 mtime（对齐 CC 设计）。
 
 resume: --resume {session_id} 或 --resume last
@@ -14,35 +14,37 @@ resume: --resume {session_id} 或 --resume last
 """
 
 import json
-from datetime import datetime
+import uuid
 from pathlib import Path
 
 
-SESSIONS_DIR = Path.home() / ".whalefin" / "sessions"
-LAST_PTR = SESSIONS_DIR / "last"
+def _sessions_dir() -> Path:
+    encoded = str(Path.cwd()).replace("/", "-")
+    return Path.home() / ".whalefin" / "projects" / encoded
+
+
+def _last_ptr() -> Path:
+    return _sessions_dir() / "last"
 
 
 def new_session_id() -> str:
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+    return str(uuid.uuid4())
 
 
 def _session_path(session_id: str) -> Path:
-    return SESSIONS_DIR / f"{session_id}.jsonl"
-
-
-def _write_last_ptr(session_id: str) -> None:
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    LAST_PTR.write_text(session_id + "\n", encoding="utf-8")
+    return _sessions_dir() / f"{session_id}.jsonl"
 
 
 def mark_active(session_id: str) -> None:
     """新建或 resume 时调用，更新 last 指针。"""
-    _write_last_ptr(session_id)
+    d = _sessions_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    _last_ptr().write_text(session_id + "\n", encoding="utf-8")
 
 
 def append_message(session_id: str, message: dict) -> None:
     """追加一条消息到 session 文件。"""
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    _sessions_dir().mkdir(parents=True, exist_ok=True)
     with _session_path(session_id).open("a", encoding="utf-8") as f:
         f.write(json.dumps(message, ensure_ascii=False) + "\n")
 
@@ -70,6 +72,7 @@ def resolve_session_id(resume_arg: str) -> str:
     """
     if resume_arg != "last":
         return resume_arg
-    if not LAST_PTR.exists():
+    ptr = _last_ptr()
+    if not ptr.exists():
         raise FileNotFoundError("没有找到任何 session 文件")
-    return LAST_PTR.read_text(encoding="utf-8").strip()
+    return ptr.read_text(encoding="utf-8").strip()
