@@ -84,6 +84,7 @@ async def run_loop(
     max_turns: int = 0,
     bg_manager: BackgroundManager = None,
     session_id: str = None,
+    token_budget: int = 0,          # 0 = 无限制
 ) -> str | None:
 
     api_tools = [t.to_api_format() for t in tools]
@@ -151,6 +152,11 @@ async def run_loop(
 
         if interactive:
             print()
+
+        # Token budget: 超限直接返回
+        if token_budget and final.usage.input_tokens >= token_budget:
+            print(f"\n[Token Budget] 已用 {final.usage.input_tokens} tokens，超过预算 {token_budget}，停止。")
+            return state["full_response"]
 
         # token 监控：处理 response 前先检查是否需要压缩
         if compact_tool and final.usage.input_tokens / MAX_TOKENS > COMPACT_THRESHOLD:
