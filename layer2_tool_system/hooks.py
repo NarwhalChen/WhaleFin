@@ -68,14 +68,22 @@ class HookRegistry:
         self.post_hooks.append((matcher, hook))
 
     async def run_pre(self, tool_name: str, tool_args: dict) -> HookResult:
-        """顺序跑匹配的 pre hook，任何一个 BLOCK 就短路。"""
+        """
+        顺序跑匹配的 pre hook。
+        - BLOCK 立刻短路（对齐 CC：用户 hook 可以推翻 AUTO_APPROVE）
+        - AUTO_APPROVE 记录但继续，让后续 hook 仍有机会 BLOCK
+        - 最终返回最后一个非 ALLOW 结果，或 ALLOW
+        """
+        final = HookResult.allow()
         for matcher, hook in self.pre_hooks:
             if not _matches(matcher, tool_name):
                 continue
             result = await hook.pre_tool_use(tool_name, tool_args)
-            if result.action != "allow":
+            if result.action == "block":
                 return result
-        return HookResult.allow()
+            if result.action == "auto_approve":
+                final = result
+        return final
 
     async def run_post(self, tool_name: str, tool_args: dict, result: str) -> str:
         """顺序跑匹配的 post hook，每个都可以改写 result。"""
