@@ -17,6 +17,7 @@ Layer 5: Safety
 import asyncio
 import sys
 import os
+import random
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -52,6 +53,25 @@ COMPACT_RULES = """
 compact 工具必须单独调用，不能与其他工具并行。
 看到 <summary> 标签时，这是之前对话的压缩摘要，不是用户消息，直接当作历史上下文使用。
 """
+
+
+_RETRYABLE = ("429", "529", "overloaded", "rate limit", "timeout", "connection")
+_MAX_RETRIES = 5
+
+
+async def _with_retry(fn, max_retries: int = _MAX_RETRIES):
+    """指数退避重试，处理 429/529/网络瞬态错误。"""
+    for attempt in range(max_retries + 1):
+        try:
+            return await fn()
+        except Exception as e:
+            msg = str(e).lower()
+            if attempt < max_retries and any(k in msg for k in _RETRYABLE):
+                wait = (2 ** attempt) + random.random()
+                print(f"\n[Retry] {type(e).__name__}，{wait:.1f}s 后重试（{attempt+1}/{max_retries}）...")
+                await asyncio.sleep(wait)
+            else:
+                raise
 
 
 async def run_loop(
@@ -112,7 +132,7 @@ async def run_loop(
                 return await stream.get_final_message()
 
         try:
-            final = await _do_stream()
+            final = await _with_retry(_do_stream)
         except Exception as e:
             if "prompt is too long" in str(e).lower() or "413" in str(e):
                 if not reactive_attempted and compact_tool:
@@ -121,7 +141,7 @@ async def run_loop(
                     await compact_tool.call({})
                     state["full_response"] = ""
                     executor = StreamingToolExecutor(tools, hook_registry=hook_registry)
-                    final = await _do_stream()
+                    final = await _with_retry(_do_stream)
                 else:
                     raise
             else:
