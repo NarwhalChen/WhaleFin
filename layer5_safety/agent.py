@@ -1,16 +1,17 @@
 """
-Layer 4: Context Economy
+Layer 5: Safety
 
-在 Layer 3 基础上新增:
-- CompactTool: 压缩对话历史，AI 主动调用 + 系统自动触发
-- token 监控: 每轮从 API response usage 读取真实 token 数
-- 自动触发: token/MAX_TOKENS 超过阈值时，在处理 response 前先压缩
-- system prompt 注入压缩规则，约束 Claude 单独调用 compact
+在 Layer 4 基础上新增:
+- BashClassifier: 危险命令检测 PreToolUseHook
+- matcher-based HookRegistry: hook 按工具名匹配
+- config-driven hooks: ~/.whalefin/settings.json + .whalefin/settings.json
+- PermissionMode: default/plan/auto/skip 四种模式，全部通过 PreToolUseHook 实现
+- Session Persistence: JSONL append-only，~/.whalefin/sessions/{id}.jsonl
 
 设计决策:
-- 阈值触发 (proactive) 优先于 AI 判断触发，避免 token 超限报错
-- 用 response.usage.input_tokens 而非估算，精确
-- compact 本身不进 tool_use pipeline，直接调 CompactTool.call()，不需要 Claude 参与
+- PermissionMode 作为 hook 注册，不改 pipeline，控制反转
+- 内置 hook（BashClassifier）永远先跑，用户配置无法覆盖
+- JSONL append-only: crash-safe，写一半不损坏历史
 """
 
 import asyncio
@@ -39,6 +40,7 @@ from layer4_context_economy.compaction import snip_result, MicroCompactor
 from layer5_safety.bash_classifier import BashClassifier
 from layer5_safety.settings import load_hooks_into
 from layer5_safety.permission_hooks import register_permission_mode
+from layer5_safety.session import new_session_id, append_message, load_session, resolve_session_id
 
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 8096
@@ -61,6 +63,7 @@ async def run_loop(
     hook_registry: HookRegistry = DEFAULT_REGISTRY,
     max_turns: int = 0,
     bg_manager: BackgroundManager = None,
+    session_id: str = None,
 ) -> str | None:
 
     api_tools = [t.to_api_format() for t in tools]
@@ -171,6 +174,8 @@ async def run_loop(
         # ── continue 点: END_TURN ────────────────────────────────────────────
         if state["full_response"]:
             messages.append({"role": "assistant", "content": state["full_response"]})
+            if session_id:
+                append_message(session_id, {"role": "assistant", "content": state["full_response"]})
 
         if not interactive:
             return state["full_response"]
@@ -185,12 +190,33 @@ async def run_loop(
             continue
 
         messages.append({"role": "user", "content": user_input})
+        if session_id:
+            append_message(session_id, {"role": "user", "content": user_input})
         state["continue_reason"] = StopReason.END_TURN
 
 
-async def main(permission_mode: str = "default") -> None:
+async def main(permission_mode: str = "default", resume: str = None) -> None:
     client = AsyncAnthropic()
-    messages: list = []
+
+    # Session setup
+    if resume:
+        try:
+            session_id = resolve_session_id(resume)
+            messages = load_session(session_id)
+            if messages is None:
+                print(f"[Session] 文件已删除，开新 session")
+                session_id = new_session_id()
+                messages = []
+            else:
+                print(f"[Session] Resume: {session_id}（{len(messages)} 条历史）")
+        except FileNotFoundError as e:
+            print(f"[Session] {e}，开新 session")
+            session_id = new_session_id()
+            messages = []
+    else:
+        session_id = new_session_id()
+        messages = []
+        print(f"[Session] 新会话: {session_id}")
 
     bg_manager = BackgroundManager()
     compact_tool = CompactTool(client=client, main_messages_ref=messages)
@@ -221,7 +247,11 @@ async def main(permission_mode: str = "default") -> None:
         return
 
     messages.append({"role": "user", "content": first_input})
-    await run_loop(messages, tools, client, bg_manager=bg_manager, hook_registry=registry)
+    # 第一条用户消息写入 session
+    if session_id:
+        append_message(session_id, {"role": "user", "content": messages[-1]["content"]})
+
+    await run_loop(messages, tools, client, bg_manager=bg_manager, hook_registry=registry, session_id=session_id)
 
 
 if __name__ == "__main__":
@@ -236,7 +266,12 @@ if __name__ == "__main__":
         "--dangerously-skip-permissions",
         action="store_true",
     )
+    parser.add_argument(
+        "--resume",
+        metavar="SESSION_ID",
+        help="Resume a previous session. Use 'last' for the most recent.",
+    )
     args = parser.parse_args()
 
     mode = "skip" if args.dangerously_skip_permissions else args.permission_mode
-    asyncio.run(main(permission_mode=mode))
+    asyncio.run(main(permission_mode=mode, resume=args.resume))
